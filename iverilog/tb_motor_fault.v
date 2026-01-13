@@ -39,6 +39,3 @@ end
 endmodule
 
 
-//iverilog tb_motor_fault.v motor_signal.v feature_extract.v classifier.v
-// vvp a.out
-// gtkwave motor.vcd
