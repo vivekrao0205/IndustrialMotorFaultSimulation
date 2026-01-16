@@ -1,4 +1,4 @@
-  # Industrial Motor Fault Simulation & Analysis 
+  # Industrial Motor Fault Simulation 
 
 > A simulation-based project for analyzing and visualizing industrial motor fault conditions using signal processing concepts and hardware description language (HDL).
 > 
