@@ -3,25 +3,22 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from scipy.fft import fft
-from scipy.stats import kurtosis, skew
+from scipy.stats import kurtosis, skew, entropy
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
-# GLOBAL PARAMETERS
+# ===================== GLOBAL PARAMETERS =====================
 
 FS = 5000
 DURATION = 1.0
-TIME = np.linspace(0, DURATION, int(FS * DURATION))
+TIME = np.linspace(0, DURATION, int(FS * DURATION), endpoint=False)
 BASE_FREQ = 50
-
-WINDOW_SIZE = 500
-STEP_SIZE = 250
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
 
-# SIGNAL GENERATOR
+# ===================== SIGNAL GENERATOR =====================
 
 class MotorSignalGenerator:
     def __init__(self, t, base_freq):
@@ -32,7 +29,9 @@ class MotorSignalGenerator:
         return np.sin(2 * np.pi * self.base_freq * self.t)
 
     def bearing_fault(self, severity):
-        return self.healthy() + severity * np.sin(2 * np.pi * 300 * self.t) + 0.05 * np.random.randn(len(self.t))
+        return (self.healthy()
+                + severity * np.sin(2 * np.pi * 300 * self.t)
+                + 0.05 * np.random.randn(len(self.t)))
 
     def rotor_fault(self, severity):
         return self.healthy() * (1 + severity * np.sin(2 * np.pi * 5 * self.t))
@@ -43,33 +42,48 @@ class MotorSignalGenerator:
     def apply_load_variation(self, signal):
         return signal * (1 + 0.2 * np.sin(2 * np.pi * 2 * self.t))
 
-
-# FEATURE EXTRACTION
+# ===================== FEATURE EXTRACTION =====================
 
 class FeatureExtractor:
     def __init__(self, fs):
         self.fs = fs
 
     def extract(self, signal):
+        signal = signal / np.max(np.abs(signal))  # normalization
         N = len(signal)
-        fft_vals = np.abs(fft(signal))[:N//2]
-        freqs = np.fft.fftfreq(N, 1/self.fs)[:N//2]
 
-        return {
-            "rms": np.sqrt(np.mean(signal**2)),
-            "mean": np.mean(signal),
-            "variance": np.var(signal),
-            "peak": np.max(np.abs(signal)),
-            "skewness": skew(signal),
-            "kurtosis": kurtosis(signal),
-            "dominant_freq": freqs[np.argmax(fft_vals)],
-            "spectral_energy": np.sum(fft_vals**2),
-            "band_low": np.sum(fft_vals[(freqs < 100)]**2),
-            "band_mid": np.sum(fft_vals[(freqs >= 100) & (freqs < 500)]**2),
-            "band_high": np.sum(fft_vals[(freqs >= 500)]**2)
-        }
+        window = np.hanning(N)
+        fft_vals = np.abs(fft(signal * window))[:N // 2]
+        freqs = np.fft.fftfreq(N, 1 / self.fs)[:N // 2]
 
-# DATASET BUILDER
+        psd = fft_vals**2 / np.sum(fft_vals**2)
+
+        return [
+            np.sqrt(np.mean(signal**2)),                 # RMS
+            np.mean(signal),
+            np.var(signal),
+            np.max(np.abs(signal)),                      # Peak
+            np.max(np.abs(signal)) / np.sqrt(np.mean(signal**2)),  # Crest factor
+            skew(signal),
+            kurtosis(signal),
+            freqs[np.argmax(fft_vals)],                  # Dominant frequency
+            np.sum(fft_vals**2),                          # Spectral energy
+            entropy(psd),                                 # Spectral entropy
+            np.sum(fft_vals[freqs < 100]**2),             # Low band energy
+            np.sum(fft_vals[(freqs >= 100) & (freqs < 500)]**2),
+            np.sum(fft_vals[freqs >= 500]**2)
+        ]
+
+    @staticmethod
+    def feature_names():
+        return [
+            "RMS", "Mean", "Variance", "Peak", "CrestFactor",
+            "Skewness", "Kurtosis", "DominantFreq",
+            "SpectralEnergy", "SpectralEntropy",
+            "BandLow", "BandMid", "BandHigh"
+        ]
+
+# ===================== DATASET BUILDER =====================
 
 def build_dataset(generator, extractor, samples=40):
     X, y = [], []
@@ -84,25 +98,24 @@ def build_dataset(generator, extractor, samples=40):
 
         for label, sig in signals.items():
             sig = generator.apply_load_variation(sig)
-            feats = extractor.extract(sig)
-            X.append(list(feats.values()))
+            X.append(extractor.extract(sig))
             y.append(label)
 
-    return np.array(X), np.array(y), list(feats.keys())
+    return np.array(X), np.array(y)
 
-# FFT PLOT FUNCTION (NEW)
+# ===================== FFT PLOT =====================
 
 def plot_fft(signal, title):
     N = len(signal)
-    fft_vals = np.abs(fft(signal))[:N//2]
-    freqs = np.fft.fftfreq(N, 1/FS)[:N//2]
+    fft_vals = np.abs(fft(signal))[:N // 2]
+    freqs = np.fft.fftfreq(N, 1 / FS)[:N // 2]
     plt.plot(freqs, fft_vals)
     plt.title(title)
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("Magnitude")
     plt.grid()
 
-# MAIN
+# ===================== MAIN =====================
 
 if __name__ == "__main__":
 
@@ -116,8 +129,8 @@ if __name__ == "__main__":
         "Stator": generator.stator_fault(0.5)
     }
 
-    # ================= TIME DOMAIN COMPARISON =================
-    plt.figure(figsize=(12,6))
+    # -------- Time Domain --------
+    plt.figure(figsize=(12, 6))
     for k, v in signals.items():
         plt.plot(v[:1000], label=k)
     plt.title("Time Domain Comparison")
@@ -125,31 +138,27 @@ if __name__ == "__main__":
     plt.grid()
     plt.show()
 
-    # ================= FFT COMPARISON (NEW GRAPH) =================
-    plt.figure(figsize=(12,6))
-    plt.subplot(2,2,1); plot_fft(signals["Healthy"], "Healthy FFT")
-    plt.subplot(2,2,2); plot_fft(signals["Bearing"], "Bearing FFT")
-    plt.subplot(2,2,3); plot_fft(signals["Rotor"], "Rotor FFT")
-    plt.subplot(2,2,4); plot_fft(signals["Stator"], "Stator FFT")
+    # -------- FFT Domain --------
+    plt.figure(figsize=(12, 6))
+    for i, (k, v) in enumerate(signals.items(), 1):
+        plt.subplot(2, 2, i)
+        plot_fft(v, f"{k} FFT")
     plt.tight_layout()
     plt.show()
 
-    # ================= FEATURE COMPARISON (NEW GRAPH) =================
-    feature_data = {k: extractor.extract(v) for k, v in signals.items()}
-    df_feat = pd.DataFrame(feature_data)
-
-    df_feat.T[["rms","variance","peak","band_high"]].plot(
-        kind="bar", figsize=(12,5)
-    )
-    plt.title("Feature Comparison of Motor Conditions")
+    # -------- Feature Comparison --------
+    feat_data = {k: extractor.extract(v) for k, v in signals.items()}
+    df_feat = pd.DataFrame(feat_data, index=extractor.feature_names())
+    df_feat.T[["RMS", "Variance", "Peak", "BandHigh"]].plot(kind="bar", figsize=(12, 5))
+    plt.title("Feature Comparison")
     plt.grid()
     plt.show()
 
-    # ================= MACHINE LEARNING =================
-    X, y, feature_names = build_dataset(generator, extractor)
+    # -------- ML--------
+    X, y = build_dataset(generator, extractor)
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=RANDOM_SEED
+        X, y, test_size=0.3, random_state=RANDOM_SEED, stratify=y
     )
 
     scaler = StandardScaler()
@@ -161,8 +170,6 @@ if __name__ == "__main__":
 
     preds = model.predict(X_test)
 
-    print("\nCLASSIFICATION REPORT:\n")
-    print(classification_report(y_test, preds))
-
-    print("CONFUSION MATRIX:\n")
-    print(confusion_matrix(y_test, preds))
+    print("\nAccuracy:", accuracy_score(y_test, preds))
+    print("\nClassification Report:\n", classification_report(y_test, preds))
+    print("Confusion Matrix:\n", confusion_matrix(y_test, preds))
